@@ -1,0 +1,12 @@
+.{
+    .name = .zgens,
+    .version = "0.0.0",
+    .fingerprint = 0xafdfafad8e9850a8,
+    .minimum_zig_version = "0.15.0-dev.582+f2077f57a",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
