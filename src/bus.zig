@@ -1,3 +1,4 @@
+//! Bus interfaces for the sega genesis
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -59,7 +60,7 @@ pub fn Bus(comptime options: BusOptions) type {
                 switch (builtin.mode) {
                     .Debug => {
                         // Check for conflicting mappings
-                        for (dev.start .. dev.end + 1) |page| {
+                        for (dev.start..dev.end + 1) |page| {
                             if (occupied_pages.isSet(page)) {
                                 return Error.ConflictingDeviceMappings;
                             } else {
@@ -84,7 +85,7 @@ pub fn Bus(comptime options: BusOptions) type {
             }
             return bus;
         }
-        
+
         /// Read something from this address.
         /// Put the `addr` as the address on the bus
         /// Put `mask` as the mask on the bus.
@@ -93,7 +94,7 @@ pub fn Bus(comptime options: BusOptions) type {
             const device = &this.devices[this.pages[addr / options.page_size]];
             return device.read(device.context, addr, mask);
         }
-        
+
         /// Write something to this address.
         /// Put the `addr` as the address on the bus
         /// Put `mask` as the mask on the bus.
