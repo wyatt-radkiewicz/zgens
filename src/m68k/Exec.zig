@@ -1,4 +1,4 @@
-//! Execution context (in an instruction)
+//! Execution context (in an instruction, or other handlers)
 const std = @import("std");
 
 const Main = @import("../bus.zig").Main;

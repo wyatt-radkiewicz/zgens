@@ -1,3 +1,4 @@
+//! Decoding engine/instruction set architecture format
 const std = @import("std");
 
 const Code = @import("Code.zig");
@@ -6,9 +7,9 @@ const int = @import("int.zig");
 
 /// Generates a lut
 pub const Decoder = struct {
-    /// Stored instruction permutations. The last permutation is the illegal instruction handler
-    perms: []const Permutation,
-    
+    /// Matches against opcodes
+    matcher: Matcher,
+
     /// Illegal code handler. Should be paramaterless.
     illegal: Code,
 
@@ -22,7 +23,7 @@ pub const Decoder = struct {
     /// Generate a lut from an isa
     pub fn init(comptime instrs: []const Instr, comptime illegal: Code) @This() {
         var this = @This(){
-            .perms = permutations(instrs),
+            .matcher = Matcher.init(instrs),
             .illegal = illegal,
             .lut = .init(0) catch unreachable,
             .top = undefined,
@@ -33,46 +34,20 @@ pub const Decoder = struct {
 
     /// Creates a compressed version of the LUT and returns it as a type
     pub fn decode(comptime this: @This(), word: u16) *const Code.Fn {
-        // Compress the table at comptime
-        const lut = comptime lut: {
-            var lut: [this.lut.len][16]std.math.IntFittingRange(
-                0,
-                @max(this.lut.len - 1, this.perms.len - 1),
-            ) = undefined;
-            for (&lut, this.lut) |*compressed_table, uncompressed_table| {
-                for (compressed_table, uncompressed_table) |*compressed, uncompressed| {
-                    compressed.* = uncompressed;
-                }
-            }
-            break :lut lut;
-        };
-        const code = comptime code: {
-            var code: [this.perms.len + 1]*const Code.Fn = undefined;
-            for (code[0..this.perms.len], this.perms) |*pfn, perm| {
-                if (perm.size) |size| {
-                    pfn.* = perm.instr.code.code(size.width());
-                } else {
-                    pfn.* = perm.instr.code.code(null);
-                }
-            }
-            code[this.perms.len] = this.illegal;
-            break :code code;
-        };
-
-        // The runtime part, just travel the 4 levels
-        var index = lut[this.top][word >> 12];
+        const Compressed = this.Compress();
+        var index = Compressed.lut[this.top][word >> 12];
         inline for (0..3) |level| {
-            index = lut[index][word >> 12 - level * 4];
+            index = Compressed.lut[index][word >> 12 - level * 4];
         }
-        return code[index];
+        return Compressed.code[index];
     }
 
     /// Visits a prefix of an or full instruction, and returns the page index
-    fn visit(this: *@This(), prefix: u16, level: u3) usize {
+    fn visit(comptime this: *@This(), prefix: u16, level: u3) usize {
         var found_perm: ?usize = null;
         for (0..1 << 16 - level * 4) |postfix| {
             const opcode = prefix << (16 - level * 4) | postfix;
-            const matched = match(this.perms, opcode);
+            const matched = this.matcher.match(this.perms, opcode);
             if (found_perm != null) {
                 if (found_perm != matched) {
                     // Okay so there is multiple different handlers here, so visit this and
@@ -105,7 +80,7 @@ pub const Decoder = struct {
 
     /// Adds the page to the lut and returns its index
     /// If there is already a page that looks like this, return that index instead
-    fn add(this: *@This(), page: [16]usize) usize {
+    fn add(comptime this: *@This(), page: [16]usize) usize {
         for (0.., this.lut.slice()) |index, lut| {
             if (std.mem.eql(usize, &lut, &page)) {
                 return index;
@@ -113,6 +88,40 @@ pub const Decoder = struct {
         }
         this.lut.appendAssumeCapacity(page);
         return this.lut.len - 1;
+    }
+
+    /// Get an compressed lut
+    fn Compress(comptime this: @This()) type {
+        return struct {
+            /// Compressed 4 level look up table to code/instr indicies
+            pub const lut = lut: {
+                var table: [this.lut.len][16]std.math.IntFittingRange(
+                    0,
+                    @max(this.lut.len - 1, this.perms.len - 1),
+                ) = undefined;
+                for (&table, this.lut) |*compressed_table, uncompressed_table| {
+                    for (compressed_table, uncompressed_table) |*compressed, uncompressed| {
+                        compressed.* = uncompressed;
+                    }
+                }
+                break :lut table;
+            };
+
+            /// Code handlers
+            pub const code = code: {
+                const num_perms = this.matcher.perms.len;
+                var handlers: [num_perms + 1]*const Code.Fn = undefined;
+                for (handlers[0..num_perms], this.perms) |*pfn, perm| {
+                    if (perm.size) |size| {
+                        pfn.* = perm.instr.code.code(size.width());
+                    } else {
+                        pfn.* = perm.instr.code.code(null);
+                    }
+                }
+                handlers[num_perms] = this.illegal;
+                break :code handlers;
+            };
+        };
     }
 };
 
@@ -123,16 +132,16 @@ pub const Instr = struct {
     /// much simpler to code, and faster too.
     /// For instructions that don't have an associated size, null can be provided
     size: ?Size,
-    
+
     /// The bitwise encoding of the instruction.
     /// This does a general match against the instruction, like a pruning operation.
     /// If matching against multiple instructions, its nessesary to match in an order of
     /// increasing specificity of each opcode.
     opcode: enc.Opcode,
-    
+
     /// Disassembly format for the instruction. How this is interpreted depends on the disassembler
     /// But usually this is written like the instruction itself
-    disasm: []const u8,
+    format: []const u8,
 
     /// What code to run for this instruction
     code: Code,
@@ -221,54 +230,60 @@ const Permutation = struct {
     }
 };
 
-/// Matches a specific concrete implementation of an instruction and returns its index
-fn match(comptime perms: []const Permutation, comptime word: u16) ?usize {
-    return for (0.., perms) |i, perm| {
-        if (perm.opcode.match(word)) {
-            return i;
-        }
-    } else null;
-}
+/// A struct that can match a word against a variable amount of instructions
+const Matcher = struct {
+    /// All the permutations
+    perms: []const Permutation,
 
-/// Generate all permutations of the instructions based on what can be paramatized in each
-fn permutations(comptime instrs: []const Instr) []const Permutation {
-    // Find out how many permutations there are
-    var num_perms = 0;
-    for (instrs) |instr| {
-        if (instr.size) |size| {
-            num_perms += switch (size) {
-                .dynamic => |dynamic| dynamic.encoding.count(),
-                .static => 1,
-            };
-        } else {
-            num_perms += 1;
-        }
-    }
-
-    // Convert each instruction into permutations
-    var perms = std.BoundedArray(Permutation, num_perms).init(0) catch unreachable;
-    for (instrs) |instr| {
-        if (instr.size) |encoding| {
-            switch (encoding) {
-                .dynamic => |dyn| {
-                    inline for (0..std.math.maxInt(dyn.encoding.BackingType()) + 1) |bits| {
-                        if (dyn.encoding.decode(bits)) |size| {
-                            perms.appendAssumeCapacity(.init(instr, size));
-                        }
-                    }
-                },
-                .static => |size| perms.appendAssumeCapacity(.init(instr, size)),
+    /// Generate all permutations of the instructions based on what can be paramatized in each
+    pub fn init(comptime instrs: []const Instr) @This() {
+        // Find out how many permutations there are
+        var num_perms = 0;
+        for (instrs) |instr| {
+            if (instr.size) |size| {
+                num_perms += switch (size) {
+                    .dynamic => |dynamic| dynamic.encoding.count(),
+                    .static => 1,
+                };
+            } else {
+                num_perms += 1;
             }
-        } else {
-            perms.appendAssumeCapacity(.init(instr, null));
         }
+
+        // Convert each instruction into permutations
+        var perms = std.BoundedArray(Permutation, num_perms).init(0) catch unreachable;
+        for (instrs) |instr| {
+            if (instr.size) |encoding| {
+                switch (encoding) {
+                    .dynamic => |dyn| {
+                        inline for (0..std.math.maxInt(dyn.encoding.BackingType()) + 1) |bits| {
+                            if (dyn.encoding.decode(bits)) |size| {
+                                perms.appendAssumeCapacity(.init(instr, size));
+                            }
+                        }
+                    },
+                    .static => |size| perms.appendAssumeCapacity(.init(instr, size)),
+                }
+            } else {
+                perms.appendAssumeCapacity(.init(instr, null));
+            }
+        }
+
+        // Then order the permutations by specificity
+        std.sort.pdq(Permutation, &perms, {}, struct {
+            pub fn lessThan(_: void, lhs: Permutation, rhs: Permutation) bool {
+                return @popCount(lhs.opcode.any) < @popCount(rhs.opcode.any);
+            }
+        }.lessThan);
+        return .{ .perms = &perms };
     }
 
-    // Then order the permutations by specificity
-    std.sort.pdq(Permutation, &perms, {}, struct {
-        pub fn lessThan(_: void, lhs: Permutation, rhs: Permutation) bool {
-            return @popCount(lhs.opcode.any) < @popCount(rhs.opcode.any);
-        }
-    }.lessThan);
-    return &perms;
-}
+    /// Matches a specific concrete implementation of an instruction and returns its index
+    pub fn match(comptime this: @This(), comptime word: u16) ?usize {
+        return for (0.., this.perms) |i, perm| {
+            if (perm.opcode.match(word)) {
+                return i;
+            }
+        } else null;
+    }
+};

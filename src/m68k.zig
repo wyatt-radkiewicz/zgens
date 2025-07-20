@@ -1,5 +1,7 @@
 //! Main cpu of the sega genesis
 const Code = @import("m68k/Code.zig");
+/// Illegal instruction handler
+const illegal_handler = Code.empty;
 const Cpu = @import("m68k/Cpu.zig");
 const decoder = @import("m68k/decoder.zig");
 const Exec = @import("m68k/Exec.zig");
@@ -19,10 +21,7 @@ const isa = &.{
     decoder.Instr{
         .size = null,
         .opcode = .init("0100101011111100"),
-        .disasm = "illegal",
+        .format = "illegal",
         .code = illegal_handler,
     },
 };
-
-/// Illegal instruction handler
-const illegal_handler = Code.empty;
