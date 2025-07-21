@@ -11,8 +11,11 @@ const int = @import("int.zig");
 /// `fn (cpu: *Cpu, exec: *Exec) void`. If size is null, then all steps have to have the second way.
 steps: []const type,
 
+/// Miscellaneous info about the code. Aribitrary, and used by the disassembler
+info: Info,
+
 /// Empty code handler
-pub const empty = @This(){ .steps = &.{} };
+pub const empty = @This(){ .steps = &.{}, .info = .empty };
 
 /// A function body that is the handler of the instruction. Takes in cpu state, bus interface
 /// and executes the instruction and returns how long in cycles it took to complete.
@@ -46,8 +49,7 @@ pub fn ea(
     comptime this: @This(),
     comptime calc: bool,
     comptime op: enum { load, store, none },
-    comptime mpos: u4,
-    comptime npos: u4,
+    comptime addr_mode: AddrMode,
 ) @This() {
     // Make sure there is a size, since we can't calculate effective addresses without them
     if (this.size_info == null) {
@@ -55,12 +57,12 @@ pub fn ea(
     }
 
     // Add the step to calculate the effective address
-    return this.append(struct {
+    var new = this;
+    new.append(struct {
         /// The actual effective address calculation
         pub inline fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
-            const m = int.extract(u3, cpu.*.ir, mpos);
-            const n = int.extract(u3, cpu.*.ir, npos);
-            const mode = enc.AddrMode.decode(m, n);
+            const n = addr_mode.n(cpu.*.ir);
+            const mode = addr_mode.decode(cpu.*.ir);
 
             // Calculate the effective address (if needed)
             if (calc) {
@@ -107,16 +109,87 @@ pub fn ea(
             }
         }
     });
+    
+    // Record any info about the operation and return the new code sequence
+    switch (op) {
+        .load => new.info.src = .{ .addr_mode = addr_mode },
+        .store => new.info.dst = .{ .addr_mode = addr_mode },
+        .none => {},
+    }
+    return new;
 }
 
 /// Internal function to append a new step
 /// The `Step` parameter should be a type with a function called `step`
-fn append(comptime this: @This(), comptime Step: type) @This() {
-    var new: [this.steps.len + 1]type = undefined;
-    @memcpy(new[0..this.steps.len], this.steps);
-    new[this.steps.len] = Step;
-    return .{ .steps = &new };
+fn append(comptime this: *@This(), comptime Step: type) void {
+    var new: [this.*.steps.len + 1]type = undefined;
+    @memcpy(new[0..this.*.steps.len], this.*.steps);
+    new[this.*.steps.len] = Step;
+    this.*.steps = &new;
 }
+
+/// Info about an addressing mode
+const AddrMode = struct {
+    /// Where are the m bits
+    mpos: u4,
+
+    /// Where are the n bits
+    npos: u4,
+
+    /// How many m bits are there?
+    msize: u16,
+
+    /// How many n bits are there?
+    nsize: u16,
+
+    /// What encoding is used?
+    encoding: enc.AddrMode.Enc,
+
+    /// Decode the addressing mode
+    pub fn decode(comptime this: @This(), word: u16) AddrMode {
+        return this.encoding.decode(this.m(word), this.n(word));
+    }
+    
+    /// Get the m bits
+    pub inline fn m(comptime this: @This(), word: u16) std.meta.Int(.unsigned, this.msize) {
+        return int.extract(std.meta.Int(.unsigned, this.msize), word, this.mpos);
+    }
+    
+    /// Get the n bits
+    pub inline fn n(comptime this: @This(), word: u16) std.meta.Int(.unsigned, this.nsize) {
+        return int.extract(std.meta.Int(.unsigned, this.nsize), word, this.npos);
+    }
+};
 
 /// The function signature for a complete instruction handler
 pub const Fn = fn (*Cpu, *Exec) void;
+
+/// Miscellaneous info about
+pub const Info = struct {
+    /// Info about a source of the code transformation
+    src: Transfer,
+
+    /// Info about the destination of the code transformation
+    dst: Transfer,
+
+    /// Empty info object
+    pub const empty = @This(){
+        .src = .none,
+        .dst = .none,
+    };
+
+    /// Info about the source or destination of a transfer
+    pub const Transfer = union(enum) {
+        /// No transfer took place
+        none: void,
+
+        /// It was a transfer from an effective address
+        addr_mode: AddrMode,
+
+        /// It was a transfer from a data register
+        data_reg: u3,
+        
+        /// It was a transfer from an address register
+        addr_reg: u3,
+    };
+};

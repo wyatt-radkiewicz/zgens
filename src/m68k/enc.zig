@@ -87,7 +87,7 @@ pub const Size = enum {
                 return null;
             };
         }
-        
+
         /// Gets the encoding for a size from the logical size
         pub fn encode(comptime this: @This(), size: Size) ?this.BackingType() {
             return @field(this, @tagName(size));
@@ -159,24 +159,90 @@ pub const AddrMode = enum {
     /// Immediate data (found after the instruction word, 8-bit still takes up word)
     imm,
 
-    /// Get the address mode from a m and n bit
-    pub inline fn decode(m: u3, n: u3) @This() {
-        return switch (m) {
-            0b000 => .data_reg,
-            0b001 => .addr_reg,
-            0b010 => .addr,
-            0b011 => .addr_inc,
-            0b100 => .addr_dec,
-            0b101 => .addr_disp,
-            0b110 => .addr_idx,
-            0b111 => switch (n) {
-                0b000 => .abs_short,
-                0b001 => .abs_long,
-                0b010 => .pc_disp,
-                0b011 => .pc_idx,
-                0b100 => .imm,
-                else => @panic("invalid addressing mode"),
-            },
+    /// Encoding for an addressing mode
+    pub const Enc = struct {
+        data_reg: ?Mapping = null,
+        addr_reg: ?Mapping = null,
+        addr: ?Mapping = null,
+        addr_inc: ?Mapping = null,
+        addr_dec: ?Mapping = null,
+        addr_disp: ?Mapping = null,
+        addr_idx: ?Mapping = null,
+        pc_disp: ?Mapping = null,
+        pc_idx: ?Mapping = null,
+        abs_short: ?Mapping = null,
+        abs_long: ?Mapping = null,
+        imm: ?Mapping = null,
+
+        /// How a m/n pair is mapped to an addressing mode
+        pub const Mapping = struct {
+            /// What should the m bits be? `null` for anything.
+            m: ?comptime_int,
+
+            /// What should the n bits be? `null` for anything.
+            n: ?comptime_int,
         };
-    }
+
+        /// Decode using this encoding
+        /// Will create a lookup table based on the type of m and n
+        pub fn decode(comptime this: @This(), m: anytype, n: anytype) AddrMode {
+            // See what the bit size of m and n will be in the lut.
+            // It will either be the bitsize of m and n, or 0 if its not used in the encoding
+            const m_size = inline for (std.meta.fieldNames(@This())) |field| {
+                if ((@field(this, field) orelse continue).m != null) {
+                    break @bitSizeOf(m);
+                }
+            } else 0;
+            const n_size = inline for (std.meta.fieldNames(@This())) |field| {
+                if ((@field(this, field) orelse continue).n != null) {
+                    break @bitSizeOf(n);
+                }
+            } else 0;
+
+            // Now we can construct a look up table
+            var lut: [1 << m_size + n_size]?AddrMode = undefined;
+            inline for (0..lut.len, &lut) |pattern, *entry| {
+                entry.* = inline for (std.meta.fieldNames(@This())) |field| {
+                    const mapping = @field(this, field) orelse continue;
+                    if (mapping.m) |mapping_m| {
+                        if (mapping_m != int.as(@TypeOf(m), pattern >> n_size)) {
+                            continue;
+                        }
+                    }
+                    if (mapping.n) |mapping_n| {
+                        if (mapping_n != int.as(@TypeOf(n), pattern)) {
+                            continue;
+                        }
+                    }
+                    break @unionInit(AddrMode, field, .{});
+                } else null;
+            }
+
+            // Simple index the lookup table
+            return lut[@as(std.meta.Int(.unsigned, m_size + n_size), m) << n_size | n_size] orelse
+                @panic("invalid addressing mode");
+        }
+
+        /// The default addressing mode (3 bits for m, 3 bits for n)
+        pub const default = @This(){
+            .data_reg = .{ .m = 0b000, .n = null },
+            .addr_reg = .{ .m = 0b001, .n = null },
+            .addr = .{ .m = 0b010, .n = null },
+            .addr_inc = .{ .m = 0b011, .n = null },
+            .addr_dec = .{ .m = 0b100, .n = null },
+            .addr_disp = .{ .m = 0b101, .n = null },
+            .addr_idx = .{ .m = 0b110, .n = null },
+            .pc_disp = .{ .m = 0b111, .n = 0b010 },
+            .pc_idx = .{ .m = 0b111, .n = 0b011 },
+            .abs_short = .{ .m = 0b111, .n = 0b000 },
+            .abs_long = .{ .m = 0b111, .n = 0b001 },
+            .imm = .{ .m = 0b111, .n = 0b100 },
+        };
+        
+        /// The single byte fast addressing mode (1 bit for m, 3 bits for n)
+        pub const regreg = @This(){
+            .data_reg = .{ .m = 0, .n = null },
+            .addr_dec = .{ .m = 1, .n = null },
+        };
+    };
 };

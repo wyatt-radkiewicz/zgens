@@ -34,12 +34,12 @@ pub const Decoder = struct {
 
     /// Creates a compressed version of the LUT and returns it as a type
     pub fn decode(comptime this: @This(), word: u16) *const Code.Fn {
-        const Compressed = this.Compress();
-        var index = Compressed.lut[this.top][word >> 12];
+        const compressed = this.compress();
+        var index = compressed.lut[this.top][word >> 12];
         inline for (0..3) |level| {
-            index = Compressed.lut[index][word >> 12 - level * 4];
+            index = compressed.lut[index][word >> 12 - level * 4];
         }
-        return Compressed.code[index];
+        return compressed.code[index];
     }
 
     /// Visits a prefix of an or full instruction, and returns the page index
@@ -90,8 +90,8 @@ pub const Decoder = struct {
         return this.lut.len - 1;
     }
 
-    /// Get an compressed lut
-    fn Compress(comptime this: @This()) type {
+    /// Get an compressed lut, it's not capitalized because its a dynamically generated namespace
+    fn compress(comptime this: @This()) type {
         return struct {
             /// Compressed 4 level look up table to code/instr indicies
             pub const lut = lut: {
