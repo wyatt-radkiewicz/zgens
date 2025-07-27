@@ -10,9 +10,6 @@ pub const Decoder = struct {
     /// Matches against opcodes
     matcher: Matcher,
 
-    /// Illegal code handler. Should be paramaterless.
-    illegal: Code,
-
     /// Uncompressed look up table. This still has no duplicates, but the actual index type is
     /// uncompressed.
     lut: std.BoundedArray([16]usize, 1 << 12),
@@ -21,10 +18,9 @@ pub const Decoder = struct {
     top: usize,
 
     /// Generate a lut from an isa
-    pub fn init(comptime instrs: []const Instr, comptime illegal: Code) @This() {
+    pub fn init(comptime opcodes: []const enc.Opcode) @This() {
         var this = @This(){
-            .matcher = Matcher.init(instrs),
-            .illegal = illegal,
+            .matcher = Matcher.init(opcodes),
             .lut = .init(0) catch unreachable,
             .top = undefined,
         };
@@ -33,13 +29,13 @@ pub const Decoder = struct {
     }
 
     /// Creates a compressed version of the LUT and returns it as a type
-    pub fn decode(comptime this: @This(), word: u16) *const Code.Fn {
-        const compressed = this.compress();
-        var index = compressed.lut[this.top][word >> 12];
+    pub fn decode(comptime this: @This(), word: u16) ?usize {
+        const lut = this.compress();
+        var index = lut[this.top][word >> 12];
         inline for (0..3) |level| {
-            index = compressed.lut[index][word >> 12 - level * 4];
+            index = lut[index][word >> 12 - level * 4];
         }
-        return compressed.code[index];
+        return if (index == this.matcher.opcodes.len) null else index;
     }
 
     /// Visits a prefix of an or full instruction, and returns the page index
@@ -47,7 +43,7 @@ pub const Decoder = struct {
         var found_perm: ?usize = null;
         for (0..1 << 16 - level * 4) |postfix| {
             const opcode = prefix << (16 - level * 4) | postfix;
-            const matched = this.matcher.match(this.perms, opcode);
+            const matched = this.matcher.match(opcode);
             if (found_perm != null) {
                 if (found_perm != matched) {
                     // Okay so there is multiple different handlers here, so visit this and
@@ -90,38 +86,23 @@ pub const Decoder = struct {
         return this.lut.len - 1;
     }
 
-    /// Get an compressed lut, it's not capitalized because its a dynamically generated namespace
-    fn compress(comptime this: @This()) type {
-        return struct {
-            /// Compressed 4 level look up table to code/instr indicies
-            pub const lut = lut: {
-                var table: [this.lut.len][16]std.math.IntFittingRange(
-                    0,
-                    @max(this.lut.len - 1, this.perms.len - 1),
-                ) = undefined;
-                for (&table, this.lut) |*compressed_table, uncompressed_table| {
-                    for (compressed_table, uncompressed_table) |*compressed, uncompressed| {
-                        compressed.* = uncompressed;
-                    }
-                }
-                break :lut table;
-            };
+    /// Returns the type of the comrpessed table
+    fn CompressedTable(comptime this: @This()) type {
+        return [this.lut.len][16]std.math.IntFittingRange(
+            0,
+            @max(this.lut.len - 1, this.matcher.opcodes.len),
+        );
+    }
 
-            /// Code handlers
-            pub const code = code: {
-                const num_perms = this.matcher.perms.len;
-                var handlers: [num_perms + 1]*const Code.Fn = undefined;
-                for (handlers[0..num_perms], this.perms) |*pfn, perm| {
-                    if (perm.size) |size| {
-                        pfn.* = perm.instr.code.code(size.width());
-                    } else {
-                        pfn.* = perm.instr.code.code(null);
-                    }
-                }
-                handlers[num_perms] = this.illegal;
-                break :code handlers;
-            };
-        };
+    /// Get an compressed lut, it's not capitalized because its a dynamically generated namespace
+    fn compress(comptime this: @This()) this.CompressedTable() {
+        var table: this.CompressedTable = undefined;
+        for (&table, this.lut) |*compressed_table, uncompressed_table| {
+            for (compressed_table, uncompressed_table) |*compressed, uncompressed| {
+                compressed.* = uncompressed;
+            }
+        }
+        return table;
     }
 };
 
@@ -185,7 +166,7 @@ pub const Instr = struct {
 };
 
 /// Represents a specific size encoding of an instruction
-const Permutation = struct {
+pub const Permutation = struct {
     /// Size it paramatized for each instruction, this is the concrete size of this implementation
     size: ?enc.Size,
 
@@ -229,15 +210,9 @@ const Permutation = struct {
             };
         }
     }
-};
 
-/// A struct that can match a word against a variable amount of instructions
-const Matcher = struct {
-    /// All the permutations
-    perms: []const Permutation,
-
-    /// Generate all permutations of the instructions based on what can be paramatized in each
-    pub fn init(comptime instrs: []const Instr) @This() {
+    /// Generates a list of permutations from a list of instructions
+    pub fn generate(comptime instrs: []const Instr) []const Permutation {
         // Find out how many permutations there are
         var num_perms = 0;
         for (instrs) |instr| {
@@ -269,22 +244,51 @@ const Matcher = struct {
                 perms.appendAssumeCapacity(.init(instr, null));
             }
         }
+        return perms.slice();
+    }
+};
 
-        // Then order the permutations by specificity
-        std.sort.pdq(Permutation, &perms, {}, struct {
-            pub fn lessThan(_: void, lhs: Permutation, rhs: Permutation) bool {
-                return @popCount(lhs.opcode.any) < @popCount(rhs.opcode.any);
+/// A struct that can match a word against a variable amount of opcodes
+pub const Matcher = struct {
+    /// All the opcodes to match against
+    opcodes: []const enc.Opcode,
+
+    /// Maps opcodes to original indexes
+    indexes: []const usize,
+
+    /// Generate all permutations of the instructions based on what can be paramatized in each
+    pub fn init(comptime opcodes: []const enc.Opcode) @This() {
+        // Create the unordered index map
+        var indexes: [opcodes.len]usize = undefined;
+        for (0.., &indexes) |i, *entry| {
+            entry.* = i;
+        }
+
+        // Sort the index map
+        std.sort.pdq(usize, &indexes, opcodes, struct {
+            pub fn lessThan(source: []const enc.Opcode, lhs: usize, rhs: usize) bool {
+                return @popCount(source[lhs].any) < @popCount(source[rhs].any);
             }
         }.lessThan);
-        return .{ .perms = &perms };
+        return .{ .opcodes = opcodes, .indexes = &indexes };
     }
 
     /// Matches a specific concrete implementation of an instruction and returns its index
+    /// corresponding to the original array of opcodes (unordered)
     pub fn match(comptime this: @This(), comptime word: u16) ?usize {
-        return for (0.., this.perms) |i, perm| {
-            if (perm.opcode.match(word)) {
-                return i;
+        return for (this.indexes) |index| {
+            if (this.opcodes[index].match(word)) {
+                return index;
             }
         } else null;
+    }
+
+    /// Extracts a list of opcodes from a slice of a type
+    pub fn extract(comptime Type: type, comptime source: []const Type) []const enc.Opcode {
+        var opcodes: [source.len]enc.Opcode = undefined;
+        for (&opcodes, source) |*opcode, instance| {
+            opcode.* = instance.opcode;
+        }
+        return &opcodes;
     }
 };

@@ -9,10 +9,14 @@ const Main = @import("bus.zig").Main;
 
 /// Run 1 instruction step on the cpu
 pub fn step(cpu: *Cpu, bus: *const Main) usize {
-    const dec = decoder.Decoder.init(&isa, illegal_handler);
-    const code = dec.decode(cpu.*.ir);
+    const perms = decoder.Permutation.generate(&isa);
+    const dec = decoder.Decoder.init(decoder.Matcher.extract(decoder.Permutation, perms));
     var exec = Exec.init(bus);
-    code(cpu, &exec);
+    if (dec.decode(cpu.*.ir)) |code| {
+        code(cpu, &exec);
+    } else {
+        illegal_handler.code(null)(cpu, &exec);
+    }
     return exec.clk;
 }
 
