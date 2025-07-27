@@ -139,8 +139,9 @@ pub const Instr = struct {
     /// increasing specificity of each opcode.
     opcode: enc.Opcode,
 
-    /// Disassembly format for the instruction. How this is interpreted depends on the disassembler
-    /// But usually this is written like the instruction itself
+    /// Disassembly format for the instruction. Written like the formats for normal zig functions.
+    /// Instead though, inside of each '{}' you put the name of the info of the instruction, like
+    /// `sz`, `src`, `dst`, and these are read from the code info and size.
     format: []const u8,
 
     /// What code to run for this instruction

@@ -128,6 +128,39 @@ fn append(comptime this: *@This(), comptime Step: type) void {
     this.*.steps = &new;
 }
 
+/// The function signature for a complete instruction handler
+pub const Fn = fn (*Cpu, *Exec) void;
+
+/// Miscellaneous info about
+pub const Info = struct {
+    /// Info about a source of the code transformation
+    src: Transfer,
+
+    /// Info about the destination of the code transformation
+    dst: Transfer,
+
+    /// Empty info object
+    pub const empty = @This(){
+        .src = .none,
+        .dst = .none,
+    };
+
+    /// Info about the source or destination of a transfer
+    pub const Transfer = union(enum) {
+        /// No transfer took place
+        none: void,
+
+        /// It was a transfer from an effective address
+        addr_mode: AddrMode,
+
+        /// It was a transfer from a data register
+        data_reg: u3,
+        
+        /// It was a transfer from an address register
+        addr_reg: u3,
+    };
+};
+
 /// Info about an addressing mode
 const AddrMode = struct {
     /// Where are the m bits
@@ -159,37 +192,13 @@ const AddrMode = struct {
     pub inline fn n(comptime this: @This(), word: u16) std.meta.Int(.unsigned, this.nsize) {
         return int.extract(std.meta.Int(.unsigned, this.nsize), word, this.npos);
     }
-};
-
-/// The function signature for a complete instruction handler
-pub const Fn = fn (*Cpu, *Exec) void;
-
-/// Miscellaneous info about
-pub const Info = struct {
-    /// Info about a source of the code transformation
-    src: Transfer,
-
-    /// Info about the destination of the code transformation
-    dst: Transfer,
-
-    /// Empty info object
-    pub const empty = @This(){
-        .src = .none,
-        .dst = .none,
-    };
-
-    /// Info about the source or destination of a transfer
-    pub const Transfer = union(enum) {
-        /// No transfer took place
-        none: void,
-
-        /// It was a transfer from an effective address
-        addr_mode: AddrMode,
-
-        /// It was a transfer from a data register
-        data_reg: u3,
-        
-        /// It was a transfer from an address register
-        addr_reg: u3,
+    
+    /// The default addressing mode version used fgor type I and II instructions
+    pub const default = @This(){
+        .mpos = 3,
+        .npos = 0,
+        .msize = 3,
+        .nsize = 3,
+        .encoding = .default,
     };
 };
