@@ -2,7 +2,7 @@
 const Code = @import("m68k/Code.zig");
 /// Illegal instruction handler
 const illegal_handler = Code.empty;
-const Cpu = @import("m68k/Cpu.zig");
+pub const Cpu = @import("m68k/Cpu.zig");
 const decoder = @import("m68k/decoder.zig");
 const Exec = @import("m68k/Exec.zig");
 const Main = @import("bus.zig").Main;
@@ -25,7 +25,7 @@ const isa = &.{
     decoder.Instr{
         .size = null,
         .opcode = .init("0100101011111100"),
-        .format = "illegal",
+        .name = "illegal",
         .code = illegal_handler,
     },
 };

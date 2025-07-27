@@ -3,6 +3,7 @@ const std = @import("std");
 
 const Main = @import("../bus.zig").Main;
 const Cpu = @import("Cpu.zig");
+const enc = @import("enc.zig");
 const int = @import("int.zig");
 
 /// The bus interface
@@ -34,16 +35,16 @@ pub fn read(this: *@This(), comptime width: u16, addr: u32) std.meta.Int(.unsign
             this.*.clk += 4;
             const shift = (addr & 1) * 8;
             const mask = @as(u16, 0xff00) >> shift;
-            return this.*.b.*.read(@truncate(addr >> 1), mask) >> shift;
+            return this.*.bus.*.read(@truncate(addr >> 1), mask) >> shift;
         },
         16 => {
             this.*.clk += 4;
-            return this.*.b.*.read(@truncate(addr >> 1), 0x0000);
+            return this.*.bus.*.read(@truncate(addr >> 1), 0x0000);
         },
         32 => {
             this.*.clk += 8;
-            return @as(u32, this.*.b.*.read(@truncate(addr >> 1), 0x0000)) << 16 |
-                @as(u32, this.*.b.*.read(@truncate(addr + 2 >> 1), 0x0000));
+            return @as(u32, this.*.bus.*.read(@truncate(addr >> 1), 0x0000)) << 16 |
+                @as(u32, this.*.bus.*.read(@truncate(addr + 2 >> 1), 0x0000));
         },
         else => @compileError(std.fmt.comptimePrint("Tried to read int of size {}", .{width})),
     }
@@ -61,16 +62,16 @@ pub fn write(
             this.*.clk += 4;
             const shift = (addr & 1) * 8;
             const mask = @as(u16, 0xff00) >> shift;
-            this.*.b.*.write(@truncate(addr >> 1), mask, value << shift);
+            this.*.bus.*.write(@truncate(addr >> 1), mask, value << shift);
         },
         16 => {
             this.*.clk += 4;
-            this.*.b.*.write(@truncate(addr >> 1), 0x0000, value);
+            this.*.bus.*.write(@truncate(addr >> 1), 0x0000, value);
         },
         32 => {
             this.*.clk += 8;
-            this.*.b.*.write(@truncate(addr >> 1), 0x0000, @truncate(value >> 16));
-            this.*.b.*.write(@truncate(addr + 2 >> 1), 0x0000, @truncate(value));
+            this.*.bus.*.write(@truncate(addr >> 1), 0x0000, @truncate(value >> 16));
+            this.*.bus.*.write(@truncate(addr +% 2 >> 1), 0x0000, @truncate(value));
         },
         else => @compileError(std.fmt.comptimePrint("Tried to write int of size {}", .{width})),
     }
@@ -90,28 +91,11 @@ pub fn fetch(this: *@This(), comptime width: u16, cpu: *Cpu) std.meta.Int(.unsig
 
 /// Fetch an extension word and get the full-width displacement
 pub fn extword(this: *@This(), cpu: *Cpu) u32 {
-    const Encoding = packed struct {
-        /// 8 bit signed displacement
-        disp: i8,
-
-        /// 3 bit padding
-        padding: u3,
-
-        /// Size bit 0 => word, 1 => long
-        size: u1,
-
-        /// Register number (data register or address register)
-        n: u3,
-
-        /// Addressing mode 0 => data register, 1 => address register
-        m: u1,
-    };
-
-    const enc: Encoding = @bitCast(this.*.fetch(16, cpu));
-    const disp = int.extend(u32, enc.disp);
-    const idx = int.extend(u32, switch (enc.m) {
-        0 => cpu.*.d[enc.n],
-        1 => cpu.*.d[enc.n],
+    const word: enc.ExtWord = @bitCast(this.*.fetch(16, cpu));
+    const disp = int.extend(u32, word.disp);
+    const idx = int.extend(u32, switch (word.m) {
+        0 => cpu.*.d[word.n],
+        1 => cpu.*.d[word.n],
     });
     return disp +% idx;
 }

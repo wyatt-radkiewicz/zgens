@@ -62,7 +62,7 @@ pub fn ea(
         /// The actual effective address calculation
         pub inline fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
             const n = addr_mode.n(cpu.*.ir);
-            const mode = addr_mode.decode(cpu.*.ir);
+            const mode = addr_mode.decode(cpu.*.ir) catch @panic("invalid addressing mode");
 
             // Calculate the effective address (if needed)
             if (calc) {
@@ -109,7 +109,7 @@ pub fn ea(
             }
         }
     });
-    
+
     // Record any info about the operation and return the new code sequence
     switch (op) {
         .load => new.info.src = .{ .addr_mode = addr_mode },
@@ -131,7 +131,7 @@ fn append(comptime this: *@This(), comptime Step: type) void {
 /// The function signature for a complete instruction handler
 pub const Fn = fn (*Cpu, *Exec) void;
 
-/// Miscellaneous info about
+/// Miscellaneous info about the code sequence
 pub const Info = struct {
     /// Info about a source of the code transformation
     src: Transfer,
@@ -152,17 +152,11 @@ pub const Info = struct {
 
         /// It was a transfer from an effective address
         addr_mode: AddrMode,
-
-        /// It was a transfer from a data register
-        data_reg: u3,
-        
-        /// It was a transfer from an address register
-        addr_reg: u3,
     };
 };
 
 /// Info about an addressing mode
-const AddrMode = struct {
+pub const AddrMode = struct {
     /// Where are the m bits
     mpos: u4,
 
@@ -179,20 +173,20 @@ const AddrMode = struct {
     encoding: enc.AddrMode.Enc,
 
     /// Decode the addressing mode
-    pub fn decode(comptime this: @This(), word: u16) AddrMode {
+    pub fn decode(comptime this: @This(), word: u16) ?enc.AddrMode {
         return this.encoding.decode(this.m(word), this.n(word));
     }
-    
+
     /// Get the m bits
     pub inline fn m(comptime this: @This(), word: u16) std.meta.Int(.unsigned, this.msize) {
         return int.extract(std.meta.Int(.unsigned, this.msize), word, this.mpos);
     }
-    
+
     /// Get the n bits
     pub inline fn n(comptime this: @This(), word: u16) std.meta.Int(.unsigned, this.nsize) {
         return int.extract(std.meta.Int(.unsigned, this.nsize), word, this.npos);
     }
-    
+
     /// The default addressing mode version used fgor type I and II instructions
     pub const default = @This(){
         .mpos = 3,

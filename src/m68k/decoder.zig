@@ -120,10 +120,8 @@ pub const Instr = struct {
     /// increasing specificity of each opcode.
     opcode: enc.Opcode,
 
-    /// Disassembly format for the instruction. Written like the formats for normal zig functions.
-    /// Instead though, inside of each '{}' you put the name of the info of the instruction, like
-    /// `sz`, `src`, `dst`, and these are read from the code info and size.
-    format: []const u8,
+    /// The mnemonic of the instruction
+    name: []const u8,
 
     /// What code to run for this instruction
     code: Code,

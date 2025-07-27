@@ -177,15 +177,15 @@ pub const AddrMode = enum {
         /// How a m/n pair is mapped to an addressing mode
         pub const Mapping = struct {
             /// What should the m bits be? `null` for anything.
-            m: ?comptime_int,
+            m: ?comptime_int = null,
 
             /// What should the n bits be? `null` for anything.
-            n: ?comptime_int,
+            n: ?comptime_int = null,
         };
 
         /// Decode using this encoding
         /// Will create a lookup table based on the type of m and n
-        pub fn decode(comptime this: @This(), m: anytype, n: anytype) AddrMode {
+        pub fn decode(comptime this: @This(), m: anytype, n: anytype) ?AddrMode {
             // See what the bit size of m and n will be in the lut.
             // It will either be the bitsize of m and n, or 0 if its not used in the encoding
             const m_size = inline for (std.meta.fieldNames(@This())) |field| {
@@ -219,8 +219,7 @@ pub const AddrMode = enum {
             }
 
             // Simple index the lookup table
-            return lut[@as(std.meta.Int(.unsigned, m_size + n_size), m) << n_size | n_size] orelse
-                @panic("invalid addressing mode");
+            return lut[@as(std.meta.Int(.unsigned, m_size + n_size), m) << n_size | n_size];
         }
 
         /// The default addressing mode (3 bits for m, 3 bits for n)
@@ -238,11 +237,29 @@ pub const AddrMode = enum {
             .abs_long = .{ .m = 0b111, .n = 0b001 },
             .imm = .{ .m = 0b111, .n = 0b100 },
         };
-        
+
         /// The single byte fast addressing mode (1 bit for m, 3 bits for n)
         pub const regreg = @This(){
             .data_reg = .{ .m = 0, .n = null },
             .addr_dec = .{ .m = 1, .n = null },
         };
     };
+};
+
+/// Extension words used in some addressing modes
+pub const ExtWord = packed struct {
+    /// 8 bit signed displacement
+    disp: i8,
+
+    /// 3 bit padding
+    padding: u3,
+
+    /// Size bit 0 => word, 1 => long
+    size: u1,
+
+    /// Register number (data register or address register)
+    n: u3,
+
+    /// Addressing mode 0 => data register, 1 => address register
+    m: u1,
 };
