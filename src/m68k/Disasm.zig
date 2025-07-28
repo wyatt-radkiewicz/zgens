@@ -23,11 +23,14 @@ pub fn init(comptime instrs: []const dec.Instr) @This() {
 
 /// Dissasembles an instruction starting at the specified address
 /// If what is at the address isn't a valid instruction, it will return null
-pub fn disasm(comptime this: @This(), reader: *Reader) ?Instr {
-    const start = reader.*.addr;
-    const opcode = reader.*.fetch(u16);
-    return switch (this.decoder.decode(opcode) orelse return null) {
-        inline else => |index| Instr.disasm(this.instrs[index], opcode, start, reader) catch null,
+pub fn disasm(comptime this: @This(), reader: *Reader) ?View {
+    var source = Source.init(reader);
+    return .{
+        .source = source,
+        .decoded = switch (this.decoder.decode(source.opcode()) orelse return null) {
+            inline else => |index| Instr.disasm(this.instrs[index], source, reader) catch
+                return null,
+        },
     };
 }
 
@@ -71,6 +74,86 @@ pub const Reader = struct {
     }
 };
 
+/// The result of disassembling at an address
+pub const View = struct {
+    /// The bytes that the instruction came from
+    source: Source,
+
+    /// Ast of the instruction
+    decoded: Instr,
+};
+
+/// Represents data that pertains to the instruction
+pub const Source = struct {
+    /// Where the bytes start
+    addr: u32,
+
+    /// The bytes that make up the instruction
+    words: std.BoundedArray(u16, 10),
+
+    /// Get the opcode from the source data
+    pub fn opcode(this: @This()) u16 {
+        return this.words.buffer[0];
+    }
+
+    /// Create a new source recorder
+    fn init(reader: *Reader) @This() {
+        var this = @This(){
+            .addr = reader.*.addr,
+            .words = .init(0) catch unreachable,
+        };
+        this.record(reader.*.fetch(u16)) catch unreachable;
+        return this;
+    }
+
+    /// Fetches data with the reader and records it
+    fn fetch(this: *@This(), comptime Data: type, reader: *Reader) error{Overflow}!Data {
+        const data = reader.*.fetch(Data);
+        try this.record(data);
+        return data;
+    }
+
+    /// Writes source type to the source buffer
+    /// If the data type is a byte long, it will make it a word and make the byte the lower 8 bits
+    fn record(this: *@This(), data: anytype) error{Overflow}!void {
+        const size = @sizeOf(@TypeOf(data));
+        const words = size + 1 >> 1;
+        var bytes = [1]u8{0} ** words * 2;
+        std.mem.writeInt(@TypeOf(data), bytes[0..size], data, .big);
+        inline for (0..words) |word| {
+            try this.*.words.appendSlice(std.mem.readInt(u16, bytes[word * 2 .. word * 2 + 2], .big));
+        }
+    }
+
+    /// Formatter for when printing to stdout
+    /// In this case:
+    ///     - `fill` is what to fill inbetween address and bytes section (probably space character)
+    ///     - `alignment` is how to align the address ('^' (center) for no address shown)
+    ///     - `width` is how much padding to put inbetween the address and the bytes section
+    pub fn format(
+        this: @This(),
+        comptime _: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (options.alignment) {
+            .center => {},
+            .left => try writer.print("{x: <8}:", .{this.addr}),
+            .right => try writer.print("{x: <8}:", .{this.addr}),
+        }
+        for (0..options.width orelse 1) |_| {
+            try writer.print("{u}", options.fill);
+        }
+        for (0.., this.words.buffer) |idx, word| {
+            if (idx >= this.words.len) {
+                try writer.print("     ", .{});
+            } else {
+                try writer.print("{x:0>4} ", .{word});
+            }
+        }
+    }
+};
+
 /// The type that gets disassembled
 pub const Instr = struct {
     /// The mnemonic of the instruction
@@ -82,17 +165,13 @@ pub const Instr = struct {
     /// Operands to the instruction
     operands: std.BoundedArray(Operand, 2),
 
-    /// The actual bytes that make up this instruction
-    source: Source,
-
     /// Disassemble into an instruction from a reader
-    fn disasm(comptime instr: dec.Instr, opcode: u16, start: u32, reader: *Reader) !@This() {
+    fn disasm(comptime instr: dec.Instr, source: *Source, reader: *Reader) !@This() {
         // Set up the size and opcode source
         var this = @This(){
             .name = instr.name,
-            .size = if (instr.size) |size| size.size(opcode) else null,
+            .size = if (instr.size) |size| size.size(source.opcode()) else null,
             .operands = .init(0) catch unreachable,
-            .source = .init(opcode, start),
         };
 
         // Disassemble the opcodes
@@ -104,6 +183,16 @@ pub const Instr = struct {
         }
         return this;
     }
+
+    ///// Formatter for when printing to stdout
+    //pub fn format(
+    //    this: @This(),
+    //    comptime fmt: []const u8,
+    //    options: std.fmt.FormatOptions,
+    //    writer: anytype,
+    //) !void {
+    //
+    //}
 };
 
 /// Represents an instruction operand
@@ -219,49 +308,4 @@ pub const EffAddr = union(enc.AddrMode) {
             };
         }
     };
-};
-
-/// Represents data that pertains to the instruction
-pub const Source = struct {
-    /// Where the bytes start
-    addr: u32,
-
-    /// The bytes that make up the instruction
-    bytes: std.BoundedArray(u8, 10),
-
-    /// Get the opcode from the source data
-    pub fn opcode(this: @This()) u16 {
-        return std.mem.readInt(u16, this.bytes.buffer[0..2], .big);
-    }
-
-    /// Create a new source recorder
-    fn init(start_opcode: u16, start_addr: u32) @This() {
-        var this = @This(){
-            .addr = start_addr,
-            .bytes = .init(0) catch unreachable,
-        };
-        this.record(start_opcode);
-        return this;
-    }
-
-    /// Fetches data with the reader and records it
-    fn fetch(this: *@This(), comptime Data: type, reader: *Reader) error{Overflow}!Data {
-        const data = reader.*.fetch(Data);
-        try this.record(data);
-        return data;
-    }
-
-    /// Writes source type to the source buffer
-    /// If the data type is a byte long, it will make it a word and make the byte the lower 8 bits
-    fn record(this: *@This(), data: anytype) error{Overflow}!void {
-        const size = @min(2, @sizeOf(@TypeOf(data)));
-        var bytes: [size]u8 = undefined;
-        std.mem.writeInt(
-            std.meta.Int(.unsigned, size * 8),
-            &bytes,
-            @as(std.meta.Int(.unsigned, @bitSizeOf(@TypeOf(data))), @bitCast(data)),
-            .big,
-        );
-        try this.*.bytes.appendSlice(bytes);
-    }
 };
