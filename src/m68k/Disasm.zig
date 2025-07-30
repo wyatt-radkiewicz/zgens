@@ -148,7 +148,7 @@ pub const Source = struct {
             if (idx >= this.words.len) {
                 try writer.print("     ", .{});
             } else {
-                try writer.print("{x:0>4} ", .{word});
+                try writer.print(" {x:0>4}", .{word});
             }
         }
     }
@@ -184,15 +184,27 @@ pub const Instr = struct {
         return this;
     }
 
-    ///// Formatter for when printing to stdout
-    //pub fn format(
-    //    this: @This(),
-    //    comptime fmt: []const u8,
-    //    options: std.fmt.FormatOptions,
-    //    writer: anytype,
-    //) !void {
-    //
-    //}
+    /// Formatter for when printing to stdout
+    /// In this case:
+    ///     - `fill` what to put inbetween operands
+    pub fn format(
+        this: @This(),
+        comptime _: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try writer.print("{s}", this.name);
+        if (this.size) |size| {
+            switch (size) {
+                .byte => try writer.print(".b", .{}),
+                .word => try writer.print(".w", .{}),
+                .long => try writer.print(".l", .{}),
+            }
+        }
+        for (this.operands.slice()) |operand| {
+            try writer.print("{u}{}", .{ options.fill, operand });
+        }
+    }
 };
 
 /// Represents an instruction operand
@@ -206,6 +218,18 @@ pub const Operand = union(enum) {
             .none => null,
             .addr_mode => |encoding| EffAddr.disasm(encoding, source, reader),
         };
+    }
+
+    /// Formatter for when printing to stdout
+    pub fn format(
+        this: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (this) {
+            .ea => |ea| try writer.print("{}", .{ea}),
+        }
     }
 };
 
@@ -245,7 +269,7 @@ pub const EffAddr = union(enc.AddrMode) {
     abs_long: u32,
 
     /// Immediate data (found after the instruction word, 8-bit still takes up word)
-    imm: u32,
+    imm: Imm,
 
     /// Disassemble an effective address
     fn disasm(
@@ -267,12 +291,35 @@ pub const EffAddr = union(enc.AddrMode) {
             .pc_idx => .{ .pc_idx = try Index.disasm(null, source, reader) },
             .abs_short => .{ .abs_short = try source.*.fetch(u16, reader) },
             .abs_long => .{ .abs_long = try source.*.fetch(u32, reader) },
-            .imm => .{ .imm = switch (size orelse return error.InvalidEncoding) {
-                .byte => try source.*.fetch(u8, reader),
-                .word => try source.*.fetch(u16, reader),
-                .long => try source.*.fetch(u32, reader),
-            } },
+            .imm => .{ .imm = try Imm.disasm(
+                size orelse return error.InvalidEncoding,
+                source,
+                reader,
+            ) },
         };
+    }
+
+    /// Formatter for when printing to stdout
+    pub fn format(
+        this: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (this) {
+            .data_reg => |n| writer.print("d{}", .{n}),
+            .addr_reg => |n| writer.print("a{}", .{n}),
+            .addr => |n| writer.print("(a{})", .{n}),
+            .addr_inc => |n| writer.print("(a{})+", .{n}),
+            .addr_dec => |n| writer.print("-(a{})", .{n}),
+            .addr_disp => |disp| writer.print("{}", .{disp}),
+            .addr_idx => |index| writer.print("{}", .{index}),
+            .pc_disp => |disp| writer.print("({}, pc)", .{disp}),
+            .pc_idx => |index| writer.print("{}", .{index}),
+            .abs_short => |short| writer.print("({x:0>4}).w", .{short}),
+            .abs_long => |long| writer.print("({x:0>8}).l", .{long}),
+            .imm => |imm| writer.print("{}", .{imm}),
+        }
     }
 
     /// Address register displacement instructions
@@ -280,7 +327,7 @@ pub const EffAddr = union(enc.AddrMode) {
         /// The displacement
         disp: i16,
 
-        /// What register is the base
+        /// What address register is the base
         base: u3,
 
         /// Disassembles a address displacement
@@ -289,6 +336,16 @@ pub const EffAddr = union(enc.AddrMode) {
                 .base = m,
                 .disp = try source.*.fetch(i16, reader),
             };
+        }
+
+        /// Formatter for when printing to stdout
+        pub fn format(
+            this: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            try writer.print("({}, a{})", .{ this.disp, this.base });
         }
     };
 
@@ -306,6 +363,64 @@ pub const EffAddr = union(enc.AddrMode) {
                 .base = m,
                 .ext = try source.*.fetch(enc.ExtWord, reader),
             };
+        }
+
+        /// Formatter for when printing to stdout
+        pub fn format(
+            this: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            try writer.print("({}, ", .{this.ext.disp});
+            if (this.base) |base| {
+                try writer.print("a{}, ", .{base});
+            } else {
+                try writer.print("pc, ", .{});
+            }
+            switch (this.ext.m) {
+                0 => try writer.print("d{}", .{this.ext.n}),
+                1 => try writer.print("a{}", .{this.ext.n}),
+            }
+            try writer.print(".{c})", .{switch (this.ext.size) {
+                0 => 'w',
+                1 => 'l',
+            }});
+        }
+    };
+
+    /// Immediate data
+    pub const Imm = union(enc.Size) {
+        /// Byte immediate. Still encoded with 16 bits
+        byte: u8,
+
+        /// Word immediate
+        word: u16,
+
+        /// Long immediate, encoded in big endian
+        long: u32,
+
+        /// Disassembles immediate data
+        fn disasm(size: enc.Size, source: *Source, reader: *Reader) error{Overflow}!@This() {
+            return switch (size) {
+                .byte => .{ .byte = try source.*.fetch(u8, reader) },
+                .word => .{ .word = try source.*.fetch(u16, reader) },
+                .long => .{ .long = try source.*.fetch(u32, reader) },
+            };
+        }
+        
+        /// Formatter for when printing to stdout
+        pub fn format(
+            this: @This(),
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            writer: anytype,
+        ) !void {
+            switch (this) {
+                .byte => |byte| try writer.print("#{x:0>2}", .{byte}),
+                .word => |word| try writer.print("#{x:0>4}", .{word}),
+                .long => |long| try writer.print("#{x:0>8}", .{long}),
+            }
         }
     };
 };
