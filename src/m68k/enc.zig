@@ -18,15 +18,16 @@ pub const Opcode = struct {
             .any = 0,
         };
         for (enc) |bit| {
+            this.set <<= 1;
+            this.any <<= 1;
             switch (bit) {
                 '0' => {},
                 '1' => this.set |= 1,
                 'x' => this.any |= 1,
                 else => @panic("expected only '0', '1', or 'x' in opcode encoding!"),
             }
-            this.set <<= 1;
-            this.any <<= 1;
         }
+        return this;
     }
 
     /// Match the opcode against a word
@@ -188,21 +189,23 @@ pub const AddrMode = enum {
         pub fn decode(comptime this: @This(), m: anytype, n: anytype) ?AddrMode {
             // See what the bit size of m and n will be in the lut.
             // It will either be the bitsize of m and n, or 0 if its not used in the encoding
-            const m_size = inline for (std.meta.fieldNames(@This())) |field| {
-                if ((@field(this, field) orelse continue).m != null) {
-                    break @bitSizeOf(m);
+            const m_size = inline for (comptime std.meta.fieldNames(@This())) |field| {
+                const mapping = @field(this, field) orelse continue;
+                if (mapping.m != null) {
+                    break @bitSizeOf(@TypeOf(m));
                 }
             } else 0;
-            const n_size = inline for (std.meta.fieldNames(@This())) |field| {
-                if ((@field(this, field) orelse continue).n != null) {
-                    break @bitSizeOf(n);
+            const n_size = inline for (comptime std.meta.fieldNames(@This())) |field| {
+                const mapping = @field(this, field) orelse continue;
+                if (mapping.n != null) {
+                    break @bitSizeOf(@TypeOf(n));
                 }
             } else 0;
 
             // Now we can construct a look up table
             var lut: [1 << m_size + n_size]?AddrMode = undefined;
             inline for (0..lut.len, &lut) |pattern, *entry| {
-                entry.* = inline for (std.meta.fieldNames(@This())) |field| {
+                entry.* = inline for (comptime std.meta.fieldNames(@This())) |field| {
                     const mapping = @field(this, field) orelse continue;
                     if (mapping.m) |mapping_m| {
                         if (mapping_m != int.as(@TypeOf(m), pattern >> n_size)) {
@@ -214,7 +217,7 @@ pub const AddrMode = enum {
                             continue;
                         }
                     }
-                    break @unionInit(AddrMode, field, .{});
+                    break @field(AddrMode, field);
                 } else null;
             }
 
@@ -239,7 +242,7 @@ pub const AddrMode = enum {
         };
 
         /// The single byte fast addressing mode (1 bit for m, 3 bits for n)
-        pub const regreg = @This(){
+        pub const reg = @This(){
             .data_reg = .{ .m = 0, .n = null },
             .addr_dec = .{ .m = 1, .n = null },
         };

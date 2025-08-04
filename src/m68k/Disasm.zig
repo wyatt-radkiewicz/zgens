@@ -1,7 +1,8 @@
 //! Disassembly engine for the m68k
 const std = @import("std");
 
-const MainBus = @import("../bus.zig").Main;
+const bus_interface = @import("bus");
+
 const Code = @import("Code.zig");
 const dec = @import("decoder.zig");
 const enc = @import("enc.zig");
@@ -24,20 +25,24 @@ pub fn init(comptime instrs: []const dec.Instr) @This() {
 /// Dissasembles an instruction starting at the specified address
 /// If what is at the address isn't a valid instruction, it will return null
 pub fn disasm(comptime this: @This(), reader: *Reader) ?View {
+    @setEvalBranchQuota(1000000000);
     var source = Source.init(reader);
+    const instr = switch (this.decoder.decode(source.opcode()) orelse return null) {
+        inline else => |index| if (index < this.instrs.len)
+            Instr.disasm(this.instrs[index], &source, reader)
+        else
+            error.InvalidEncoding,
+    } catch return null;
     return .{
         .source = source,
-        .decoded = switch (this.decoder.decode(source.opcode()) orelse return null) {
-            inline else => |index| Instr.disasm(this.instrs[index], source, reader) catch
-                return null,
-        },
+        .decoded = instr,
     };
 }
 
 /// Represents state to read data from memory
 pub const Reader = struct {
     /// The bus to read data from
-    bus: *const MainBus,
+    bus: *const bus_interface.Bus(.main),
 
     /// Where to read data from
     addr: u32,
@@ -47,9 +52,12 @@ pub const Reader = struct {
         const bits = switch (@bitSizeOf(Type)) {
             8 => byte: {
                 this.*.addr +%= 1;
-                const shift = (this.addr & 1) * 8;
+                const shift = @as(u4, @truncate(this.addr & 1)) * 8;
                 const mask = @as(u16, 0xff00) >> shift;
-                const byte: u8 = this.*.bus.*.read(@truncate(this.*.addr >> 1), mask) >> shift;
+                const byte: u8 = @truncate(this.*.bus.*.read(
+                    @truncate(this.*.addr >> 1),
+                    mask,
+                ) >> shift);
                 this.*.addr +%= 1;
                 break :byte byte;
             },
@@ -100,7 +108,7 @@ pub const Source = struct {
     fn init(reader: *Reader) @This() {
         var this = @This(){
             .addr = reader.*.addr,
-            .words = .init(0) catch unreachable,
+            .words = .{},
         };
         this.record(reader.*.fetch(u16)) catch unreachable;
         return this;
@@ -116,12 +124,17 @@ pub const Source = struct {
     /// Writes source type to the source buffer
     /// If the data type is a byte long, it will make it a word and make the byte the lower 8 bits
     fn record(this: *@This(), data: anytype) error{Overflow}!void {
+        // Get the size of the data, and the size rounded up to the nearest word
         const size = @sizeOf(@TypeOf(data));
         const words = size + 1 >> 1;
-        var bytes = [1]u8{0} ** words * 2;
-        std.mem.writeInt(@TypeOf(data), bytes[0..size], data, .big);
+
+        // Write the data in big endian to the buffer
+        var bytes = [1]u8{0} ** (words * 2);
+        std.mem.writeInt(std.meta.Int(.unsigned, size * 8), bytes[0..size], @bitCast(data), .big);
+
+        // Write the data as native endian words
         inline for (0..words) |word| {
-            try this.*.words.appendSlice(std.mem.readInt(u16, bytes[word * 2 .. word * 2 + 2], .big));
+            try this.*.words.append(std.mem.readInt(u16, bytes[word * 2 .. word * 2 + 2], .big));
         }
     }
 
@@ -142,7 +155,7 @@ pub const Source = struct {
             .right => try writer.print("{x: <8}:", .{this.addr}),
         }
         for (0..options.width orelse 1) |_| {
-            try writer.print("{u}", options.fill);
+            try writer.print("{u}", .{options.fill});
         }
         for (0.., this.words.buffer) |idx, word| {
             if (idx >= this.words.len) {
@@ -171,14 +184,14 @@ pub const Instr = struct {
         var this = @This(){
             .name = instr.name,
             .size = if (instr.size) |size| size.size(source.opcode()) else null,
-            .operands = .init(0) catch unreachable,
+            .operands = .{},
         };
 
         // Disassemble the opcodes
-        if (try Operand.disasm(this.size, instr.code.info.src, &this.source, reader)) |operand| {
+        if (try Operand.disasm(this.size, instr.code.info.src, source, reader)) |operand| {
             try this.operands.append(operand);
         }
-        if (try Operand.disasm(this.size, instr.code.info.dst, &this.source, reader)) |operand| {
+        if (try Operand.disasm(this.size, instr.code.info.dst, source, reader)) |operand| {
             try this.operands.append(operand);
         }
         return this;
@@ -193,7 +206,7 @@ pub const Instr = struct {
         options: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        try writer.print("{s}", this.name);
+        try writer.print("{s}", .{this.name});
         if (this.size) |size| {
             switch (size) {
                 .byte => try writer.print(".b", .{}),
@@ -201,8 +214,12 @@ pub const Instr = struct {
                 .long => try writer.print(".l", .{}),
             }
         }
-        for (this.operands.slice()) |operand| {
-            try writer.print("{u}{}", .{ options.fill, operand });
+        try writer.print("{u}", .{options.fill});
+        for (0.., this.operands.slice()) |idx, operand| {
+            if (idx != 0) {
+                try writer.print(",", .{});
+            }
+            try writer.print("{}", .{operand});
         }
     }
 };
@@ -213,10 +230,15 @@ pub const Operand = union(enum) {
     ea: EffAddr,
 
     /// Disassembles an operand
-    fn disasm(comptime transfer: Code.Info.Transfer, source: *Source, reader: *Reader) !?@This() {
+    fn disasm(
+        size: ?enc.Size,
+        comptime transfer: Code.Info.Transfer,
+        source: *Source,
+        reader: *Reader,
+    ) !?@This() {
         return switch (transfer) {
             .none => null,
-            .addr_mode => |encoding| EffAddr.disasm(encoding, source, reader),
+            .addr_mode => |encoding| .{ .ea = try EffAddr.disasm(size, encoding, source, reader) },
         };
     }
 
@@ -279,14 +301,14 @@ pub const EffAddr = union(enc.AddrMode) {
         reader: *Reader,
     ) !@This() {
         const word = source.opcode();
-        return switch (info.decode(word) catch return error.InvalidEncoding) {
-            .data_reg, .addr_reg, .addr, .addr_inc, .addr_dec => |mode| @unionInit(
+        return switch (info.decode(word) orelse return error.InvalidEncoding) {
+            inline .data_reg, .addr_reg, .addr, .addr_inc, .addr_dec => |mode| @unionInit(
                 @This(),
                 @tagName(mode),
-                info.m(word),
+                info.n(word),
             ),
-            .addr_disp => .{ .addr_disp = try Disp.disasm(info.m(word), source, reader) },
-            .addr_idx => .{ .addr_idx = try Index.disasm(info.m(word), source, reader) },
+            .addr_disp => .{ .addr_disp = try Disp.disasm(info.n(word), source, reader) },
+            .addr_idx => .{ .addr_idx = try Index.disasm(info.n(word), source, reader) },
             .pc_disp => .{ .pc_disp = try source.*.fetch(i16, reader) },
             .pc_idx => .{ .pc_idx = try Index.disasm(null, source, reader) },
             .abs_short => .{ .abs_short = try source.*.fetch(u16, reader) },
@@ -306,7 +328,7 @@ pub const EffAddr = union(enc.AddrMode) {
         _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        switch (this) {
+        try switch (this) {
             .data_reg => |n| writer.print("d{}", .{n}),
             .addr_reg => |n| writer.print("a{}", .{n}),
             .addr => |n| writer.print("(a{})", .{n}),
@@ -319,7 +341,7 @@ pub const EffAddr = union(enc.AddrMode) {
             .abs_short => |short| writer.print("({x:0>4}).w", .{short}),
             .abs_long => |long| writer.print("({x:0>8}).l", .{long}),
             .imm => |imm| writer.print("{}", .{imm}),
-        }
+        };
     }
 
     /// Address register displacement instructions
@@ -331,9 +353,9 @@ pub const EffAddr = union(enc.AddrMode) {
         base: u3,
 
         /// Disassembles a address displacement
-        fn disasm(m: u3, source: *Source, reader: *Reader) error{Overflow}!@This() {
+        fn disasm(n: u3, source: *Source, reader: *Reader) error{Overflow}!@This() {
             return .{
-                .base = m,
+                .base = n,
                 .disp = try source.*.fetch(i16, reader),
             };
         }
@@ -351,16 +373,16 @@ pub const EffAddr = union(enc.AddrMode) {
 
     /// Address register and program counter indexed instructions
     pub const Index = struct {
-        /// What register is the base (null if pc)
+        /// What address register is the base (null if pc)
         base: ?u3,
 
         /// The index register, and displacement
         ext: enc.ExtWord,
 
         /// Disassembles a address index
-        fn disasm(m: ?u3, source: *Source, reader: *Reader) error{Overflow}!@This() {
+        fn disasm(n: ?u3, source: *Source, reader: *Reader) error{Overflow}!@This() {
             return .{
-                .base = m,
+                .base = n,
                 .ext = try source.*.fetch(enc.ExtWord, reader),
             };
         }
@@ -382,10 +404,10 @@ pub const EffAddr = union(enc.AddrMode) {
                 0 => try writer.print("d{}", .{this.ext.n}),
                 1 => try writer.print("a{}", .{this.ext.n}),
             }
-            try writer.print(".{c})", .{switch (this.ext.size) {
+            try writer.print(".{c})", .{@as(u8, switch (this.ext.size) {
                 0 => 'w',
                 1 => 'l',
-            }});
+            })});
         }
     };
 
@@ -408,7 +430,7 @@ pub const EffAddr = union(enc.AddrMode) {
                 .long => .{ .long = try source.*.fetch(u32, reader) },
             };
         }
-        
+
         /// Formatter for when printing to stdout
         pub fn format(
             this: @This(),

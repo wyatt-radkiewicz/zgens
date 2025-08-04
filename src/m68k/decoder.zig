@@ -21,7 +21,7 @@ pub const Decoder = struct {
     pub fn init(comptime opcodes: []const enc.Opcode) @This() {
         var this = @This(){
             .matcher = Matcher.init(opcodes),
-            .lut = .init(0) catch unreachable,
+            .lut = .{},
             .top = undefined,
         };
         this.top = this.visit(0, 0);
@@ -29,11 +29,11 @@ pub const Decoder = struct {
     }
 
     /// Creates a compressed version of the LUT and returns it as a type
-    pub fn decode(comptime this: @This(), word: u16) ?usize {
+    pub fn decode(comptime this: @This(), word: u16) ?this.Entry() {
         const lut = this.compress();
         var index = lut[this.top][word >> 12];
         inline for (0..3) |level| {
-            index = lut[index][word >> 12 - level * 4];
+            index = lut[index][word >> 8 - level * 4 & 0xf];
         }
         return if (index == this.matcher.opcodes.len) null else index;
     }
@@ -41,8 +41,8 @@ pub const Decoder = struct {
     /// Visits a prefix of an or full instruction, and returns the page index
     fn visit(comptime this: *@This(), prefix: u16, level: u3) usize {
         var found_perm: ?usize = null;
-        for (0..1 << 16 - level * 4) |postfix| {
-            const opcode = prefix << (16 - level * 4) | postfix;
+        for (0..1 << 16 - @as(u5, level) * 4) |postfix| {
+            const opcode = prefix << @truncate(16 - @as(u5, level) * 4) | postfix;
             const matched = this.matcher.match(opcode);
             if (found_perm != null) {
                 if (found_perm != matched) {
@@ -50,7 +50,7 @@ pub const Decoder = struct {
                     // then add the visited lut as a new entry
                     var page: [16]usize = undefined;
                     for (0..16) |next_prefix| {
-                        const full_prefix = prefix << 4 + next_prefix;
+                        const full_prefix = (prefix << 4) + next_prefix;
                         page[next_prefix] = this.visit(full_prefix, level + 1);
                     }
                     return this.add(page);
@@ -61,14 +61,14 @@ pub const Decoder = struct {
         }
 
         // Since all of them are the same, lets just add a stub node
-        var page = found_perm orelse this.perms.len;
+        var page = found_perm orelse this.matcher.opcodes.len;
         if (level == 4) {
             // This is the final level, so lets just link directly to the permutation
             return page;
         }
 
         // This isn't so we need to add some padding levels
-        for (0..3 - level) |_| {
+        for (0..4 - level) |_| {
             page = this.add([1]usize{page} ** 16);
         }
         return page;
@@ -88,18 +88,20 @@ pub const Decoder = struct {
 
     /// Returns the type of the comrpessed table
     fn CompressedTable(comptime this: @This()) type {
-        return [this.lut.len][16]std.math.IntFittingRange(
-            0,
-            @max(this.lut.len - 1, this.matcher.opcodes.len),
-        );
+        return [this.lut.len][16]this.Entry();
+    }
+    
+    /// The entry type in the look up tables
+    fn Entry(comptime this: @This()) type {
+        return std.math.IntFittingRange(0, @max(this.lut.len - 1, this.matcher.opcodes.len));
     }
 
     /// Get an compressed lut, it's not capitalized because its a dynamically generated namespace
     fn compress(comptime this: @This()) this.CompressedTable() {
-        var table: this.CompressedTable = undefined;
-        for (&table, this.lut) |*compressed_table, uncompressed_table| {
+        var table: this.CompressedTable() = undefined;
+        for (&table, this.lut.slice()) |*compressed_table, uncompressed_table| {
             for (compressed_table, uncompressed_table) |*compressed, uncompressed| {
-                compressed.* = uncompressed;
+                compressed.* = @intCast(uncompressed);
             }
         }
         return table;
@@ -174,6 +176,16 @@ pub const Permutation = struct {
     /// The actual instruction handling this permutation
     instr: Instr,
 
+    /// Gets the code for a number of permutations
+    pub fn code(comptime perms: []const @This()) []const *const Code.Fn {
+        var fns: [perms.len]*const Code.Fn = undefined;
+        for (perms, &fns) |perm, *func| {
+            func.* = perm.instr.code.code(if (perm.size) |size| size.width() else null);
+        }
+        const final = fns;
+        return &final;
+    }
+
     /// Create a specialized handler for a specific size
     pub fn init(instr: Instr, specialization: ?enc.Size) @This() {
         if (instr.size) |instr_size| {
@@ -225,7 +237,7 @@ pub const Permutation = struct {
         }
 
         // Convert each instruction into permutations
-        var perms = std.BoundedArray(Permutation, num_perms).init(0) catch unreachable;
+        var perms = std.BoundedArray(Permutation, num_perms){};
         for (instrs) |instr| {
             if (instr.size) |encoding| {
                 switch (encoding) {
@@ -242,7 +254,8 @@ pub const Permutation = struct {
                 perms.appendAssumeCapacity(.init(instr, null));
             }
         }
-        return perms.slice();
+        const final = perms.buffer;
+        return final[0..perms.len];
     }
 };
 
@@ -268,12 +281,14 @@ pub const Matcher = struct {
                 return @popCount(source[lhs].any) < @popCount(source[rhs].any);
             }
         }.lessThan);
-        return .{ .opcodes = opcodes, .indexes = &indexes };
+        const final_indexes = indexes;
+        return .{ .opcodes = opcodes, .indexes = &final_indexes };
     }
 
     /// Matches a specific concrete implementation of an instruction and returns its index
     /// corresponding to the original array of opcodes (unordered)
     pub fn match(comptime this: @This(), comptime word: u16) ?usize {
+        @setEvalBranchQuota(2000000);
         return for (this.indexes) |index| {
             if (this.opcodes[index].match(word)) {
                 return index;
@@ -287,6 +302,15 @@ pub const Matcher = struct {
         for (&opcodes, source) |*opcode, instance| {
             opcode.* = instance.opcode;
         }
-        return &opcodes;
+        const final = opcodes;
+        return &final;
     }
 };
+
+/// Decode code for an isa
+pub fn decode(comptime isa: []const Instr, ir: u16) ?*const Code.Fn {
+    const perms = comptime Permutation.generate(isa);
+    const code = comptime Permutation.code(perms);
+    const decoder = comptime Decoder.init(Matcher.extract(Permutation, perms));
+    return code[decoder.decode(ir) orelse return null];
+}

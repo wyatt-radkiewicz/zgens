@@ -1,29 +1,25 @@
 //! Execution context (in an instruction, or other handlers)
 const std = @import("std");
 
-const Main = @import("../bus.zig").Main;
+const bus_interface = @import("bus");
 const Cpu = @import("Cpu.zig");
 const enc = @import("enc.zig");
 const int = @import("int.zig");
 
 /// The bus interface
-bus: *const Main,
+bus: *const bus_interface.Bus(.main),
 
-/// Effective address loaded value/store value
-ea_data: u32,
-
-/// Effective address
-ea_addr: u32,
+/// Effective address information
+ea: Ea.Type,
 
 /// The number of cycles processed so far
 clk: usize,
 
 /// The initial state of the execution context
-pub fn init(bus: *const Main) @This() {
+pub fn init(bus: *const bus_interface.Bus(.main)) @This() {
     return .{
         .bus = bus,
-        .ea_addr = 0,
-        .ea_data = 0,
+        .ea = .{},
         .clk = 0,
     };
 }
@@ -33,9 +29,9 @@ pub fn read(this: *@This(), comptime width: u16, addr: u32) std.meta.Int(.unsign
     switch (width) {
         8 => {
             this.*.clk += 4;
-            const shift = (addr & 1) * 8;
+            const shift: u4 = @intCast((addr & 1) * 8);
             const mask = @as(u16, 0xff00) >> shift;
-            return this.*.bus.*.read(@truncate(addr >> 1), mask) >> shift;
+            return @truncate(this.*.bus.*.read(@truncate(addr >> 1), mask) >> shift);
         },
         16 => {
             this.*.clk += 4;
@@ -60,9 +56,9 @@ pub fn write(
     switch (width) {
         8 => {
             this.*.clk += 4;
-            const shift = (addr & 1) * 8;
+            const shift: u4 = @intCast((addr & 1) * 8);
             const mask = @as(u16, 0xff00) >> shift;
-            this.*.bus.*.write(@truncate(addr >> 1), mask, value << shift);
+            this.*.bus.*.write(@truncate(addr >> 1), mask, @as(u16, value) << shift);
         },
         16 => {
             this.*.clk += 4;
@@ -99,3 +95,21 @@ pub fn extword(this: *@This(), cpu: *Cpu) u32 {
     });
     return disp +% idx;
 }
+
+/// Effective address information
+pub const Ea = struct {
+    /// Effective address loaded value/store value
+    data: u32 = 0,
+
+    /// Effective address
+    addr: u32 = 0,
+
+    /// Effective address types
+    pub const Type = struct {
+        /// Destination
+        dst: Ea = .{},
+
+        /// Source
+        src: Ea = .{},
+    };
+};

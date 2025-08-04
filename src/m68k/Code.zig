@@ -14,8 +14,19 @@ steps: []const type,
 /// Miscellaneous info about the code. Aribitrary, and used by the disassembler
 info: Info,
 
-/// Empty code handler
-pub const empty = @This(){ .steps = &.{}, .info = .empty };
+/// Default code builder
+pub const builder = @This(){ .steps = &.{}, .info = .empty };
+
+/// Code handler that adds cycles to the state
+pub fn cycles(comptime this: @This(), comptime clk: usize) @This() {
+    var new = this;
+    new.append(struct {
+        pub fn step(_: *Cpu, exec: *Exec) void {
+            exec.*.clk += clk;
+        }
+    });
+    return new;
+}
 
 /// A function body that is the handler of the instruction. Takes in cpu state, bus interface
 /// and executes the instruction and returns how long in cycles it took to complete.
@@ -23,20 +34,23 @@ pub fn code(comptime this: @This(), comptime width: ?u16) Fn {
     return struct {
         pub fn code(cpu: *Cpu, exec: *Exec) void {
             inline for (this.steps) |step| {
-                const sig = switch (@typeInfo(@FieldType(step, "step"))) {
+                if (!@hasDecl(step, "step")) {
+                    @compileError("Expected code step type to have 'step' fn!");
+                }
+                const sig = switch (@typeInfo(@TypeOf(step.step))) {
                     .@"fn" => |info| info,
                     else => @compileError("Expected code step type to have 'step' fn!"),
                 };
-                if (sig.params[0].type == u16 and sig.params[0].is_generic) {
+                if (sig.params[0].type == u16) {
                     // Paramatized instruction step
                     if (width) |count| {
-                        step.step(count, cpu, &exec);
+                        step.step(count, cpu, exec);
                     } else {
                         @compileError("Paramatized code step but there is no size!");
                     }
                 } else {
                     // Non-paramatized instruction step
-                    step.step(cpu, &exec);
+                    step.step(cpu, exec);
                 }
             }
         }
@@ -45,37 +59,36 @@ pub fn code(comptime this: @This(), comptime width: ?u16) Fn {
 
 /// Calculate an effective address and put it in the execution context
 /// If load is set to true, it will load the data from f
+/// If `clk` is true, it will add clock cycles
 pub fn ea(
     comptime this: @This(),
+    comptime transfer: std.meta.FieldEnum(Exec.Ea.Type),
     comptime calc: bool,
+    comptime clk: bool,
     comptime op: enum { load, store, none },
     comptime addr_mode: AddrMode,
 ) @This() {
-    // Make sure there is a size, since we can't calculate effective addresses without them
-    if (this.size_info == null) {
-        @compileError("Instruction needs size encoding for effective address calculation");
-    }
-
     // Add the step to calculate the effective address
     var new = this;
     new.append(struct {
         /// The actual effective address calculation
         pub inline fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
             const n = addr_mode.n(cpu.*.ir);
-            const mode = addr_mode.decode(cpu.*.ir) catch @panic("invalid addressing mode");
+            const mode = addr_mode.decode(cpu.*.ir) orelse @panic("invalid addressing mode");
+            const ty = @tagName(transfer);
 
             // Calculate the effective address (if needed)
             if (calc) {
-                exec.*.ea_addr = switch (mode) {
-                    .data_reg, .addr_reg, .imm => {},
+                @field(exec.*.ea, ty).addr = switch (mode) {
+                    .data_reg, .addr_reg, .imm => 0,
                     .addr => cpu.*.a[n],
                     .addr_inc => addr_inc: {
                         const addr = cpu.*.a[n];
-                        cpu.*.a[n] += width / 8;
+                        cpu.*.a[n] +%= width / 8;
                         break :addr_inc addr;
                     },
                     .addr_dec => addr_dec: {
-                        cpu.*.a[n] -= width / 8;
+                        cpu.*.a[n] -%= width / 8;
                         break :addr_dec cpu.*.a[n];
                     },
                     .addr_disp => cpu.*.a[n] +% int.extend(u32, exec.*.fetch(16, cpu)),
@@ -85,25 +98,35 @@ pub fn ea(
                     .abs_short => int.extend(u32, exec.*.fetch(16, cpu)),
                     .abs_long => exec.*.fetch(32, cpu),
                 };
+                exec.*.clk += switch (mode) {
+                    .addr_dec, .addr_idx, .pc_idx => 2 * @as(usize, @intFromBool(clk)),
+                    else => 0,
+                };
             }
 
             // Complete the memory operation (if needed)
             switch (op) {
                 .store => switch (mode) {
-                    .data_reg => cpu.*.d[n] = int.overwrite(cpu.*.d[n], exec.*.ea_data),
-                    .addr_reg => cpu.*.a[n] = int.extend(u32, exec.*.ea_data),
+                    .data_reg => cpu.*.d[n] = int.overwrite(
+                        cpu.*.d[n],
+                        int.as(std.meta.Int(.unsigned, width), @field(exec.*.ea, ty).data),
+                    ),
+                    .addr_reg => cpu.*.a[n] = int.extend(
+                        u32,
+                        int.as(std.meta.Int(.unsigned, width), @field(exec.*.ea, ty).data),
+                    ),
                     .imm => {},
                     else => exec.*.write(
                         width,
-                        exec.*.ea_addr,
-                        int.as(std.meta.Int(.unsigned, width), exec.*.ea_data),
+                        @field(exec.*.ea, ty).addr,
+                        int.as(std.meta.Int(.unsigned, width), @field(exec.*.ea, ty).data),
                     ),
                 },
-                .load => exec.*.ea_data = @as(u32, switch (mode) {
+                .load => @field(exec.*.ea, ty).data = @as(u32, switch (mode) {
                     .data_reg => cpu.*.d[n],
                     .addr_reg => cpu.*.a[n],
                     .imm => exec.*.fetch(width, cpu),
-                    else => exec.*.read(width, exec.*.ea_addr),
+                    else => exec.*.read(width, @field(exec.*.ea, ty).addr),
                 }),
                 .none => {},
             }
@@ -111,11 +134,42 @@ pub fn ea(
     });
 
     // Record any info about the operation and return the new code sequence
-    switch (op) {
-        .load => new.info.src = .{ .addr_mode = addr_mode },
-        .store => new.info.dst = .{ .addr_mode = addr_mode },
-        .none => {},
+    switch (transfer) {
+        .src => new.info.src = .{ .addr_mode = addr_mode },
+        .dst => new.info.dst = .{ .addr_mode = addr_mode },
     }
+    return new;
+}
+
+/// Fetch the next instruction into the instruction register
+pub fn fetch(comptime this: @This()) @This() {
+    var new = this;
+    new.append(struct {
+        pub fn step(cpu: *Cpu, exec: *Exec) void {
+            cpu.*.ir = exec.*.fetch(16, cpu);
+        }
+    });
+    return new;
+}
+
+/// Do a binary decimal operation
+pub fn bcd(comptime this: @This(), comptime op: enum { add, sub }) @This() {
+    var new = this;
+    new.append(struct {
+        pub fn step(cpu: *Cpu, exec: *Exec) void {
+            const src = int.frombcd(@truncate(exec.*.ea.src.data));
+            const dst = int.frombcd(@truncate(exec.*.ea.dst.data));
+            const result = int.tobcd(switch (op) {
+                .add => dst +% src +% cpu.*.sr.x,
+                .sub => dst -% src -% cpu.*.sr.x,
+            });
+            exec.*.ea.dst.data = result[0];
+            exec.*.clk += 2;
+            cpu.*.sr.c = result[1];
+            cpu.*.sr.x = result[1];
+            cpu.*.sr.z &= @intFromBool(result[0] == 0);
+        }
+    });
     return new;
 }
 
@@ -125,7 +179,8 @@ fn append(comptime this: *@This(), comptime Step: type) void {
     var new: [this.*.steps.len + 1]type = undefined;
     @memcpy(new[0..this.*.steps.len], this.*.steps);
     new[this.*.steps.len] = Step;
-    this.*.steps = &new;
+    const final = new;
+    this.*.steps = &final;
 }
 
 /// The function signature for a complete instruction handler
@@ -195,4 +250,18 @@ pub const AddrMode = struct {
         .nsize = 3,
         .encoding = .default,
     };
+
+    /// This is the addressing mode version used for abcd, and family
+    pub fn bcd(npos: enum { src, dst }) @This() {
+        return .{
+            .mpos = 3,
+            .npos = switch (npos) {
+                .src => 0,
+                .dst => 9,
+            },
+            .msize = 1,
+            .nsize = 3,
+            .encoding = .reg,
+        };
+    }
 };
