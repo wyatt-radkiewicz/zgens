@@ -12,6 +12,7 @@ const Exec = @import("Exec.zig");
 
 /// Instruction set for the m68k
 pub const isa = &.{
+    // Add decimal with extend
     Instr{
         .name = "abcd",
         .size = .{ .static = .byte },

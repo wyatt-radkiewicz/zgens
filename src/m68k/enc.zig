@@ -203,26 +203,56 @@ pub const AddrMode = enum {
             } else 0;
 
             // Now we can construct a look up table
-            var lut: [1 << m_size + n_size]?AddrMode = undefined;
-            inline for (0..lut.len, &lut) |pattern, *entry| {
-                entry.* = inline for (comptime std.meta.fieldNames(@This())) |field| {
-                    const mapping = @field(this, field) orelse continue;
-                    if (mapping.m) |mapping_m| {
-                        if (mapping_m != int.as(@TypeOf(m), pattern >> n_size)) {
-                            continue;
+            const lut = comptime lut: {
+                var lut: [1 << m_size + n_size]?AddrMode = undefined;
+                for (0..lut.len, &lut) |pattern, *entry| {
+                    entry.* = for (std.meta.fieldNames(@This())) |field| {
+                        const mapping = @field(this, field) orelse continue;
+                        if (mapping.m) |mapping_m| {
+                            if (mapping_m != int.as(@TypeOf(m), pattern >> n_size)) {
+                                continue;
+                            }
                         }
-                    }
-                    if (mapping.n) |mapping_n| {
-                        if (mapping_n != int.as(@TypeOf(n), pattern)) {
-                            continue;
+                        if (mapping.n) |mapping_n| {
+                            if (mapping_n != int.as(@TypeOf(n), pattern)) {
+                                continue;
+                            }
                         }
-                    }
-                    break @field(AddrMode, field);
-                } else null;
-            }
+                        break @field(AddrMode, field);
+                    } else null;
+                }
+                break :lut lut;
+            };
 
-            // Simple index the lookup table
-            return lut[@as(std.meta.Int(.unsigned, m_size + n_size), m) << n_size | n_size];
+            if (comptime std.mem.allEqual(?AddrMode, &lut, lut[0])) {
+                // If the lut has everything as the same then just return that
+                return lut[0];
+            } else if (comptime m_size == 1 and n_size == 0) {
+                // Skip the lut for binary choices, and just find the mappings for 0 and 1
+                const zero, const one = comptime mappings: {
+                    var zero: ?AddrMode = null;
+                    var one: ?AddrMode = null;
+                    for (std.meta.fieldNames(@This())) |field| {
+                        const mapping = @field(this, field) orelse continue;
+                        switch (mapping.m orelse continue) {
+                            0 => zero = @field(AddrMode, field),
+                            1 => one = @field(AddrMode, field),
+                            else => {},
+                        }
+                    }
+                    break :mappings .{
+                        zero orelse @compileError("No zero encoding for 1 bit mapping!"),
+                        one orelse @compileError("No one encoding for 1 bit mapping!"),
+                    };
+                };
+                return switch (m) {
+                    0 => zero,
+                    1 => one,
+                };
+            } else {
+                // Index the lookup table
+                return lut[@as(std.meta.Int(.unsigned, m_size + n_size), m) << n_size | n_size];
+            }
         }
 
         /// The default addressing mode (3 bits for m, 3 bits for n)
