@@ -229,6 +229,12 @@ pub const Operand = union(enum) {
     /// The operand is an effective address
     ea: EffAddr,
 
+    /// Data register operand
+    data: u3,
+
+    /// Address register operand
+    addr: u3,
+
     /// Disassembles an operand
     fn disasm(
         size: ?enc.Size,
@@ -239,6 +245,8 @@ pub const Operand = union(enum) {
         return switch (transfer) {
             .none => null,
             .addr_mode => |encoding| .{ .ea = try EffAddr.disasm(size, encoding, source, reader) },
+            .data => |pos| .{ .data = int.extract(u3, source.opcode(), pos) },
+            .addr => |pos| .{ .addr = int.extract(u3, source.opcode(), pos) },
         };
     }
 
@@ -251,6 +259,8 @@ pub const Operand = union(enum) {
     ) !void {
         switch (this) {
             .ea => |ea| try writer.print("{}", .{ea}),
+            .data => |n| try writer.print("d{}", .{n}),
+            .addr => |n| try writer.print("a{}", .{n}),
         }
     }
 };

@@ -21,6 +21,7 @@ pub fn init(bus: *const bus_interface.Bus(.main)) @This() {
         .bus = bus,
         .ea = .{},
         .clk = 0,
+        .am = .data,
     };
 }
 

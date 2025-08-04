@@ -44,13 +44,13 @@ pub fn code(comptime this: @This(), comptime width: ?u16) Fn {
                 if (sig.params[0].type == u16) {
                     // Paramatized instruction step
                     if (width) |count| {
-                        step.step(count, cpu, exec);
+                        @call(.never_inline, step.step, .{ count, cpu, exec });
                     } else {
                         @compileError("Paramatized code step but there is no size!");
                     }
                 } else {
                     // Non-paramatized instruction step
-                    step.step(cpu, exec);
+                    @call(.never_inline, step.step, .{ cpu, exec });
                 }
             }
         }
@@ -72,7 +72,7 @@ pub fn ea(
     var new = this;
     new.append(struct {
         /// The actual effective address calculation
-        pub inline fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
+        pub fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
             const Int = std.meta.Int(.unsigned, width);
             const n = addr_mode.n(cpu.*.ir);
             const mode = addr_mode.decode(cpu.*.ir) orelse @panic("invalid addressing mode");
@@ -146,7 +146,7 @@ pub fn ea(
 pub fn streg(comptime this: @This(), comptime reg: enc.Reg, comptime npos: u4) @This() {
     var new = this;
     new.append(struct {
-        pub inline fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
+        pub fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
             const Int = std.meta.Int(.unsigned, width);
             const n = int.extract(u3, cpu.*.ir, npos);
             switch (reg) {
@@ -168,7 +168,7 @@ pub fn ldreg(
 ) @This() {
     var new = this;
     new.append(struct {
-        pub inline fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
+        pub fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
             const Int = std.meta.Int(.unsigned, width);
             const n = int.extract(u3, cpu.*.ir, npos);
             @field(exec.*.ea, @tagName(transfer)).data = switch (reg) {
@@ -212,6 +212,25 @@ pub fn bcd(comptime this: @This(), comptime op: enum { add, sub }) @This() {
     });
     return new;
 }
+
+/// Do an arithmatic operation
+//pub fn add(comptime this: @This()) @This() {
+//    var new = this;
+//    new.append(struct {
+//        pub fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
+//            const Int = std.meta.Int(.unsigned, width);
+//            const result = int.add(.{
+//                int.as(Int, exec.*.ea.dst.data),
+//                int.as(Int, exec.*.ea.src.data),
+//            });
+//            exec.*.ea.dst.data = result[0];
+//            cpu.*.sr.c = result[1];
+//            cpu.*.sr.x = result[1];
+//            cpu.*.sr.z &= @intFromBool(result[0] == 0);
+//        }
+//    });
+//    return new;
+//}
 
 /// Internal function to append a new step
 /// The `Step` parameter should be a type with a function called `step`

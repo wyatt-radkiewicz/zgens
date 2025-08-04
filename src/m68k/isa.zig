@@ -26,17 +26,17 @@ pub const isa = &.{
     },
 
     // Add (data register destination)
-    Instr{
-        .name = "add",
-        .size = .default,
-        .opcode = .init("1101xxx0xxxxxxxx"),
-        .code = Code.builder
-            .ea(.src, true, false, .load, .bcd(.src))
-            .ldreg(.dst, .data, 9)
-            .add()
-            .streg(.dst, .data, 9)
-            .fetch(),
-    },
+    //Instr{
+    //    .name = "add",
+    //    .size = .default,
+    //    .opcode = .init("1101xxx0xxxxxxxx"),
+    //    .code = Code.builder
+    //        .ea(.src, true, false, .load, .bcd(.src))
+    //        .ldreg(.dst, .data, 9)
+    //        .add()
+    //        .streg(.dst, .data, 9)
+    //        .fetch(),
+    //},
 };
 
 /// Run the test code in rom until the instruction pointer goes past the array.
