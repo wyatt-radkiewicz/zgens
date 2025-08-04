@@ -73,6 +73,7 @@ pub fn ea(
     new.append(struct {
         /// The actual effective address calculation
         pub inline fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
+            const Int = std.meta.Int(.unsigned, width);
             const n = addr_mode.n(cpu.*.ir);
             const mode = addr_mode.decode(cpu.*.ir) orelse @panic("invalid addressing mode");
             const ty = @tagName(transfer);
@@ -109,22 +110,22 @@ pub fn ea(
                 .store => switch (mode) {
                     .data_reg => cpu.*.d[n] = int.overwrite(
                         cpu.*.d[n],
-                        int.as(std.meta.Int(.unsigned, width), @field(exec.*.ea, ty).data),
+                        int.as(Int, @field(exec.*.ea, ty).data),
                     ),
-                    .addr_reg => cpu.*.a[n] = int.extend(
-                        u32,
-                        int.as(std.meta.Int(.unsigned, width), @field(exec.*.ea, ty).data),
+                    .addr_reg => cpu.*.a[n] = int.overwrite(
+                        cpu.*.a[n],
+                        int.as(Int, @field(exec.*.ea, ty).data),
                     ),
                     .imm => {},
                     else => exec.*.write(
                         width,
                         @field(exec.*.ea, ty).addr,
-                        int.as(std.meta.Int(.unsigned, width), @field(exec.*.ea, ty).data),
+                        int.as(Int, @field(exec.*.ea, ty).data),
                     ),
                 },
                 .load => @field(exec.*.ea, ty).data = @as(u32, switch (mode) {
-                    .data_reg => cpu.*.d[n],
-                    .addr_reg => cpu.*.a[n],
+                    .data_reg => int.as(Int, cpu.*.d[n]),
+                    .addr_reg => int.extend(u32, int.as(Int, cpu.*.a[n])),
                     .imm => exec.*.fetch(width, cpu),
                     else => exec.*.read(width, @field(exec.*.ea, ty).addr),
                 }),
@@ -138,6 +139,45 @@ pub fn ea(
         .src => new.info.src = .{ .addr_mode = addr_mode },
         .dst => new.info.dst = .{ .addr_mode = addr_mode },
     }
+    return new;
+}
+
+/// Store effective address destination data into a register
+pub fn streg(comptime this: @This(), comptime reg: enc.Reg, comptime npos: u4) @This() {
+    var new = this;
+    new.append(struct {
+        pub inline fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
+            const Int = std.meta.Int(.unsigned, width);
+            const n = int.extract(u3, cpu.*.ir, npos);
+            switch (reg) {
+                .data => cpu.*.d[n] = int.overwrite(cpu.*.d[n], int.as(Int, exec.*.ea.dst.data)),
+                .addr => cpu.*.a[n] = int.overwrite(cpu.*.a[n], int.as(Int, exec.*.ea.dst.data)),
+            }
+        }
+    });
+    new.info.dst = @unionInit(Info.Transfer, @tagName(reg), npos);
+    return new;
+}
+
+/// Load register into effective address slot
+pub fn ldreg(
+    comptime this: @This(),
+    comptime transfer: std.meta.FieldEnum(Exec.Ea.Type),
+    comptime reg: enc.Reg,
+    comptime npos: u4,
+) @This() {
+    var new = this;
+    new.append(struct {
+        pub inline fn step(comptime width: u16, cpu: *Cpu, exec: *Exec) void {
+            const Int = std.meta.Int(.unsigned, width);
+            const n = int.extract(u3, cpu.*.ir, npos);
+            @field(exec.*.ea, @tagName(transfer)).data = switch (reg) {
+                .data => int.as(Int, cpu.*.d[n]),
+                .addr => int.extend(u32, int.as(Int, cpu.*.a[n])),
+            };
+        }
+    });
+    @field(new.info, @tagName(transfer)) = @unionInit(Info.Transfer, @tagName(reg), npos);
     return new;
 }
 
@@ -207,6 +247,12 @@ pub const Info = struct {
 
         /// It was a transfer from an effective address
         addr_mode: AddrMode,
+
+        /// It was a transfer from a data register
+        data: u4,
+
+        /// It was a transfer from an address register
+        addr: u4,
     };
 };
 

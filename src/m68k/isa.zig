@@ -17,12 +17,24 @@ pub const isa = &.{
         .name = "abcd",
         .size = .{ .static = .byte },
         .opcode = .init("1100xxx10000xxxx"),
-        .code = Code
-            .builder
+        .code = Code.builder
             .ea(.dst, true, false, .load, .bcd(.dst))
             .ea(.src, true, false, .load, .bcd(.src))
             .bcd(.add)
             .ea(.dst, false, false, .store, .bcd(.dst))
+            .fetch(),
+    },
+
+    // Add (data register destination)
+    Instr{
+        .name = "add",
+        .size = .default,
+        .opcode = .init("1101xxx0xxxxxxxx"),
+        .code = Code.builder
+            .ea(.src, true, false, .load, .bcd(.src))
+            .ldreg(.dst, .data, 9)
+            .add()
+            .streg(.dst, .data, 9)
             .fetch(),
     },
 };

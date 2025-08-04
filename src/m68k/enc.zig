@@ -204,9 +204,9 @@ pub const AddrMode = enum {
 
             // Now we can construct a look up table
             const lut = comptime lut: {
-                var lut: [1 << m_size + n_size]?AddrMode = undefined;
+                var lut = [1]?AddrMode{null} ** (1 << m_size + n_size);
                 for (0..lut.len, &lut) |pattern, *entry| {
-                    entry.* = for (std.meta.fieldNames(@This())) |field| {
+                    for (std.meta.fieldNames(@This())) |field| {
                         const mapping = @field(this, field) orelse continue;
                         if (mapping.m) |mapping_m| {
                             if (mapping_m != int.as(@TypeOf(m), pattern >> n_size)) {
@@ -218,8 +218,8 @@ pub const AddrMode = enum {
                                 continue;
                             }
                         }
-                        break @field(AddrMode, field);
-                    } else null;
+                        entry.* = @field(AddrMode, field);
+                    }
                 }
                 break :lut lut;
             };
@@ -294,5 +294,10 @@ pub const ExtWord = packed struct {
     n: u3,
 
     /// Addressing mode 0 => data register, 1 => address register
-    m: u1,
+    m: Reg,
 };
+
+/// Register encoding often times used
+/// 0 -> Data Register
+/// 1 -> Address Register
+pub const Reg = enum { data, addr };
